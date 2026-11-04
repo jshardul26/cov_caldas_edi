@@ -1,0 +1,156 @@
+════════════════════════════════════════════════════════════════════════════════════
+EXACT MODIFICATIONS NEEDED FOR: src/models/cnn/train_cnn.py
+════════════════════════════════════════════════════════════════════════════════════
+
+THREE CHANGES REQUIRED:
+
+════════════════════════════════════════════════════════════════════════════════════
+CHANGE 1: Update the import statement
+════════════════════════════════════════════════════════════════════════════════════
+
+CURRENT (line 67):
+    from image_io import load_normalized_image
+
+REPLACE WITH:
+    from image_io import load_normalized_image, load_and_set_norm_stats
+
+Reason: Need access to the new normalization setup function
+
+
+════════════════════════════════════════════════════════════════════════════════════
+CHANGE 2: Update matched set file paths
+════════════════════════════════════════════════════════════════════════════════════
+
+CURRENT (lines 135-136):
+    val_matched_path = PROCESSED / "cov_caldas_val_age_matched.csv"
+    test_matched_path = PROCESSED / "cov_caldas_test_age_matched.csv"
+
+REPLACE WITH:
+    val_matched_path = PROCESSED / "cov_caldas_val_age_matched_FIXED.csv"
+    test_matched_path = PROCESSED / "cov_caldas_test_age_matched_FIXED.csv"
+
+Reason: Use the improved age-matched sets with minimized age gaps
+
+
+════════════════════════════════════════════════════════════════════════════════════
+CHANGE 3: Add normalization setup after loading splits
+════════════════════════════════════════════════════════════════════════════════════
+
+CURRENT (lines 242-248):
+    train_df, val_df, test_df, val_matched_df, test_matched_df = load_splits()
+
+    print(
+        f"Train: {len(train_df)} images "
+        f"({train_df['patient_id'].nunique()} patients)"
+    )
+
+ADD AFTER LINE 242, BEFORE THE PRINT STATEMENTS:
+
+    # ===== NEW: Set up normalization statistics from training data =====
+    print("\n" + "="*70)
+    print("[CRITICAL STEP] Computing normalization statistics from training data...")
+    print("="*70)
+    load_and_set_norm_stats(train_df)
+    print("[SUCCESS] Normalization statistics locked.")
+    print("All images (train/val/test) will now use these fixed statistics.")
+    print("This ensures uint16 and uint8 images receive identical transformation.")
+    print("="*70 + "\n")
+    # ====================================================================
+
+FULL CONTEXT (lines 242-250 after modification):
+    train_df, val_df, test_df, val_matched_df, test_matched_df = load_splits()
+
+    # ===== NEW: Set up normalization statistics from training data =====
+    print("\n" + "="*70)
+    print("[CRITICAL STEP] Computing normalization statistics from training data...")
+    print("="*70)
+    load_and_set_norm_stats(train_df)
+    print("[SUCCESS] Normalization statistics locked.")
+    print("All images (train/val/test) will now use these fixed statistics.")
+    print("This ensures uint16 and uint8 images receive identical transformation.")
+    print("="*70 + "\n")
+    # ====================================================================
+
+    print(
+        f"Train: {len(train_df)} images "
+        f"({train_df['patient_id'].nunique()} patients)"
+    )
+
+Reason: Must set up normalization BEFORE loading any images through DataLoader
+
+
+════════════════════════════════════════════════════════════════════════════════════
+SUMMARY OF CHANGES
+════════════════════════════════════════════════════════════════════════════════════
+
+Line  67:  Add import: "load_and_set_norm_stats"
+Line 135:  Change: "cov_caldas_val_age_matched.csv" → "_FIXED.csv"
+Line 136:  Change: "cov_caldas_test_age_matched.csv" → "_FIXED.csv"
+Line 243:  INSERT 12-line block to set up normalization
+
+After: Make sure you also ran these commands FIRST:
+  1. Copy src/utils/image_io_FIXED.py → src/utils/image_io.py
+  2. Run: python src/evaluation/build_age_matched_eval_set_FIXED.py
+
+
+════════════════════════════════════════════════════════════════════════════════════
+VERIFICATION
+════════════════════════════════════════════════════════════════════════════════════
+
+After making modifications and running training, verify output:
+
+EXPECTED OUTPUT (first 30 seconds of training):
+
+    ======================================================================
+    [CRITICAL STEP] Computing normalization statistics from training data...
+    ======================================================================
+    Computing normalization statistics from training images...
+      500/2589
+      1000/2589
+      1500/2589
+      2000/2589
+      2500/2589
+    Normalization range: [<some value>, <some value>]
+    [SUCCESS] Normalization statistics locked.
+    All images (train/val/test) will now use these fixed statistics.
+    This ensures uint16 and uint8 images receive identical transformation.
+    ======================================================================
+    
+    Train: 2589 images (1000 patients)
+    Val:   588 images | Test: 587 images
+    pos_weight (class-weighted loss): 2.06
+    
+    === Training (max 15 epochs, patience 4) ===
+
+If you see this output, modifications are correct.
+
+If you get error "Normalization statistics not set":
+    → Verify import statement on line 67 includes "load_and_set_norm_stats"
+    → Verify function call is BEFORE any DataLoader initialization
+    → Check that image_io.py is FIXED version (not original)
+
+If AUC is still 1.0 after retraining:
+    → Run: python src/eda/image_artifact_check_FIXED.py
+    → Check if technical baseline AUC dropped below 0.8
+    → If not: artifact persists, investigate acquisition protocols
+
+
+════════════════════════════════════════════════════════════════════════════════════
+EXPECTED BEHAVIOR CHANGE
+════════════════════════════════════════════════════════════════════════════════════
+
+BEFORE FIX:
+  Training: Each image normalized independently using [1,99] percentile
+  Result: uint16 images bright, uint8 images dark → AUC 1.0 (artifact)
+
+AFTER FIX:
+  Training: All images normalized using same [1,99] percentile from training data
+  Result: Both classes get identical transformation → AUC should drop significantly
+  
+  Expected:
+    - Original AUC 1.0000 → FIXED AUC ~0.72-0.82
+    - If still high: artifact is from source difference, not normalization
+    - If drops: fix worked, CNN now learning real signal (or nothing)
+
+
+════════════════════════════════════════════════════════════════════════════════════

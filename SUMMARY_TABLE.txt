@@ -1,0 +1,271 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                  EDI PROJECT 5 - AUDIT SUMMARY TABLE                           ║
+║                     COVID-19 Chest X-Ray Classification                        ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ CRITICAL FINDINGS                                                               │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ ISSUE 1: ACQUISITION ARTIFACT NOT ELIMINATED                                   │
+│                                                                                 │
+│ Current Status:  CRITICAL — INVALIDATES ALL RESULTS                            │
+│ Severity:        🔴 MUST FIX BEFORE PUBLICATION                                 │
+│                                                                                 │
+│ Finding:         Despite per-image normalization, classes still separate       │
+│                  with AUC ~1.0 using only pixel statistics.                    │
+│                                                                                 │
+│ Root Cause:      Percentile-based normalization doesn't eliminate uint16/uint8 │
+│                  legacy differences. Instead, it ENCODES them differently:     │
+│                  - uint16 images (lower native range) → bright                 │
+│                  - uint8 images (full range) → dark/variable                   │
+│                                                                                 │
+│ Evidence:        After normalization:                                          │
+│                  - mean intensity: pos=174.85 vs neg=81.77 (2.1x difference)  │
+│                  - border intensity: pos=138.24 vs neg=37.79 (3.7x difference)│
+│                  - frac_dark: pos=0.05 vs neg=0.39 (7.8x ratio)               │
+│                                                                                 │
+│ Interpretation:  Model has trivial shortcut: "is image bright? → positive"    │
+│                  This is NOT medical COVID signal, it's acquisition artifact.  │
+│                                                                                 │
+│ Required Fix:    Use dataset-level normalization statistics (computed from    │
+│                  training data only) applied identically to all images.        │
+│                                                                                 │
+│ File to Replace: src/utils/image_io.py → image_io_FIXED.py                    │
+│ Implementation:  5 minutes (+ ~30 min re-running analysis)                     │
+│ Expected Impact: Test AUC drops from 1.0000 to 0.7-0.8 range                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ ISSUE 2: VAL AGE-MATCHED SET HAS RESIDUAL 12-YEAR AGE GAP                      │
+│                                                                                 │
+│ Current Status:  CRITICAL — VAL RESULTS UNRELIABLE                             │
+│ Severity:        🔴 MUST FIX BEFORE USING VAL MATCHED RESULTS                   │
+│                                                                                 │
+│ Finding:         Age-matched val set: pos mean age 58.3, neg mean 70.3        │
+│                  Gap = 12 years (original gap was 31.9 years)                 │
+│                  Test set matched correctly (gap = 0.3 years)                  │
+│                                                                                 │
+│ Root Cause:      Matching algorithm selects equal numbers from each 10-year    │
+│                  bin but doesn't minimize within-bin age distance.             │
+│                  When bin has 14 pos and 1 neg, picks 1 of each randomly      │
+│                  (could be 14 years apart, still same bin).                    │
+│                                                                                 │
+│ Statistical Impact: Sample size is 18 patients per class                       │
+│                  AUC noise floor ±0.15 (from random chance)                    │
+│                  Reporting "AUC 1.0000" on n=18 is meaningless                │
+│                                                                                 │
+│ Required Fix:    Minimize age distance between matched pos/neg pairs           │
+│                  within each age bin using scipy.spatial.cdist                 │
+│                                                                                 │
+│ File to Replace: build_age_matched_eval_set.py → build_age_matched_eval..._   │
+│                  FIXED.py (new file, run instead of original)                  │
+│ Implementation:  2 minutes (+ ~1 min to regenerate matched sets)               │
+│ Expected Impact: Val age gap < 1 year, results become statistically valid     │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ ISSUE 3: IMAGE COUNT IMBALANCE IN AGE-MATCHED SETS                             │
+│                                                                                 │
+│ Current Status:  HIGH — EVALUATION METHODOLOGY FLAWED                          │
+│ Severity:        🟠 MUST FIX (MEDIUM PRIORITY)                                  │
+│                                                                                 │
+│ Finding:         Val matched: 18 pos patients (96 images) vs 18 neg patients   │
+│                  (57 images) → 1.69x image imbalance                           │
+│                  Test matched: 22 pos patients (99 images) vs 22 neg patients  │
+│                  (41 images) → 2.41x image imbalance                           │
+│                                                                                 │
+│ Root Cause:      Positive patients have more images (mean 4.25) than negative  │
+│                  (mean 1.6) due to acquisition patterns. Patient-level         │
+│                  matching produces image-level imbalance.                      │
+│                                                                                 │
+│ Problem:         CNN trained with per-patient weighting, but evaluated at      │
+│                  image level. Imbalanced images mean positive class gets       │
+│                  upweighted in evaluation, inflating apparent performance.     │
+│                                                                                 │
+│ Required Fix:    Either: (A) Report image counts and caveat results, or       │
+│                  (B) Aggregate predictions to patient level                    │
+│                                                                                 │
+│ Implementation:  Already handled in FIXED version (reports image counts)       │
+│ Expected Impact: Results become statistically honest (caveated with n)         │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ ISSUE 4: AP/PA VIEW CONFOUND NOT CONTROLLED                                    │
+│                                                                                 │
+│ Current Status:  HIGH — DOCUMENTED BUT NOT EVALUATED                           │
+│ Severity:        🟠 MUST ADDRESS (MEDIUM PRIORITY)                              │
+│                                                                                 │
+│ Finding:         Positive class: 87.1% AP, 12.9% PA                           │
+│                  Negative class: 70.5% AP, 29.5% PA                           │
+│                  Difference: 16.6% (highly significant)                        │
+│                                                                                 │
+│ Why It Matters:  AP and PA projections look visually different (depth, organ   │
+│                  positioning). Model could learn "AP → positive" without       │
+│                  seeing any medical signal.                                    │
+│                                                                                 │
+│ Current Control: Code says "Remaining confound" but does NOT stratify eval     │
+│                  No AP-only or PA-only performance measurement                 │
+│                                                                                 │
+│ Required Fix:    Create AP-only and PA-only evaluation subsets                │
+│                  Report CNN performance separately for each view                │
+│                                                                                 │
+│ File to Create:  add_ap_pa_stratified_eval.py (new)                            │
+│ Implementation:  1 minute to generate sets + 30 min to re-evaluate             │
+│ Expected Output: Report 3 results: full test, AP-only, PA-only                 │
+│                  If similar AUC → learned content; if different → learned view  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ SECONDARY ISSUES (MEDIUM PRIORITY)                                             │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ ISSUE 5: EVALUATION UNIT MISMATCH                                              │
+│                                                                                 │
+│ Finding:         Training uses per-patient weighting (WeightedRandomSampler)  │
+│                  Evaluation is per-image without aggregation                    │
+│                  These don't match: evaluation doesn't reflect training logic   │
+│                                                                                 │
+│ Required Fix:    Either report image-level results (current, acceptable) OR    │
+│                  aggregate patient-level results (more complex)                │
+│                                                                                 │
+│ Current Status:  Acceptable if documented                                      │
+│ Implementation:  Add footnote to results explaining evaluation unit            │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ ISSUE 6: SMALL SAMPLE SIZES IN MATCHED SETS                                    │
+│                                                                                 │
+│ Finding:         Val matched: 18 positive patients                             │
+│                  Test matched: 22 positive patients                            │
+│                  Statistical noise ~±15-20% AUC from random chance             │
+│                                                                                 │
+│ Required Fix:    Report with confidence intervals and interpret as directional │
+│                  Do NOT claim definitive conclusions from small matched sets   │
+│                                                                                 │
+│ Current Status:  Code already warns about this                                 │
+│ Implementation:  Update reporting to include confidence intervals              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ IMPLEMENTATION PRIORITY & TIMELINE                                             │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+PHASE 1 (CRITICAL - MUST DO FIRST):
+  [ ] Replace src/utils/image_io.py with FIXED version
+  [ ] Run image_artifact_check_FIXED.py to verify artifact status
+  [ ] Assess: Did artifact decrease? Are we still getting AUC ~1.0?
+  
+  If artifact still ~1.0:
+    → STOP and investigate acquisition protocols
+    → Problem is not just bit depth, may need data source analysis
+    → Contact data provider about scanning parameters
+  
+  If artifact dropped to 0.6-0.8:
+    → PROCEED to Phase 2
+
+PHASE 2 (CRITICAL - DO AFTER PHASE 1 SUCCESS):
+  [ ] Run build_age_matched_eval_set_FIXED.py
+  [ ] Retrain CNN with fixed image_io + new matched sets
+  [ ] Record new baseline results
+  
+  Expected:
+    - Test AUC drops from 1.0 to ~0.7-0.8
+    - Age-matched test AUC drops from 1.0 to ~0.7-0.8
+    - If AUC still high: artifact persists (see Phase 1 failure case)
+
+PHASE 3 (SECONDARY - DO AFTER PHASE 2):
+  [ ] Run add_ap_pa_stratified_eval.py
+  [ ] Evaluate on AP-only and PA-only subsets
+  [ ] Interpret view-dependent performance
+  
+  Report as:
+    - CNN test AUC (full): X
+    - CNN test AUC (AP-only): Y
+    - CNN test AUC (PA-only): Z
+    - "AUC similar across views → learning content; different → learning artifact"
+
+PHASE 4 (FINAL - DOCUMENTATION):
+  [ ] Update results tables with new corrected numbers
+  [ ] Add interpretation section comparing to baselines
+  [ ] Document all controls and limitations
+  [ ] Update conclusions based on actual evidence
+
+ESTIMATED TIME:
+  Phase 1:  5 min implementation + 30 min analysis = 35 min
+  Phase 2:  10 min implementation + 2.5 hours training = 2.5 hours
+  Phase 3:  1 min implementation + 30 min evaluation = 30 min
+  Phase 4:  20 min documentation
+
+  TOTAL: ~3.5 hours
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ VALIDATION CHECKLIST                                                           │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+After implementing all fixes, verify:
+
+NORMALIZATION:
+  [ ] image_io loads training data, computes [1,99] percentile
+  [ ] Same stats applied to train/val/test/matched sets
+  [ ] No per-image normalization differences remain
+  
+AGE MATCHING:
+  [ ] Val matched: age gap < 2 years (was 12)
+  [ ] Test matched: age gap < 1 year (was 0.3, already good)
+  [ ] Match quality report shows within-pair distances
+  
+ARTIFACT ANALYSIS:
+  [ ] Technical baseline test AUC < 0.8 (was 1.0)
+  [ ] If still ≥ 0.9: artifact persists, stop and investigate
+  
+TRAINING:
+  [ ] CNN imports fixed image_io
+  [ ] Normalization set before loading images
+  [ ] Uses _FIXED matched sets for evaluation
+  [ ] Results recorded separately from original runs
+  
+EVALUATION:
+  [ ] Full test: AUC < 0.85 (was 1.0)
+  [ ] Age-matched test: AUC < 0.85 (was 1.0)
+  [ ] AP-only: performance reported
+  [ ] PA-only: performance reported
+  [ ] Results compared to metadata/technical baselines
+
+DOCUMENTATION:
+  [ ] "Previous results (AUC 1.0) were invalid due to [artifact/confound]"
+  [ ] All baseline comparisons shown
+  [ ] Limitations documented
+  [ ] Conclusions state "evidence suggests learning beyond age/AP shortcuts"
+      (only if supported by data)
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ EXPECTED RESULTS AFTER CORRECTIONS                                             │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+BASELINE PERFORMANCES (expected ranges):
+  Metadata-only (age/sex):        AUC 0.88-0.94 ← ceiling for demographic learning
+  Technical features (pixels):    AUC 0.65-0.75 ← after fixing normalization
+  CNN (full test):                AUC 0.72-0.82 ← must exceed both baselines
+  CNN (age-matched test):         AUC 0.68-0.78 ← directional only (n=22)
+  
+INTERPRETATION DECISION TREE:
+
+  Is CNN age-matched AUC > metadata baseline?
+    YES → Model learns beyond age → evidence for medical signal ✓
+    NO  → Model relies on age-correlated features → shortcut learning ✗
+    
+  Is CNN test AUC > technical baseline by >10 points?
+    YES → Model learns beyond pixel statistics → genuine learning ✓
+    NO  → Model is learning intensity patterns → artifact or shallow signal ✗
+    
+  Is CNN AP-only AUC similar to PA-only?
+    YES → Model learned view-independent content → good ✓
+    DIFFERENT → Model exploited AP/PA → bad ✗
+    
+  Overall Conclusion:
+    If all three are YES: CNN learned medical COVID signal ✓ VALID FOR PUBLICATION
+    If one or more is NO: CNN learning shortcuts, not medical signal ✗ NEEDS WORK
+

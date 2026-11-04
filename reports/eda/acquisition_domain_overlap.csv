@@ -1,0 +1,9 @@
+manufacturer,model,bits_stored,view,images,patients,positive_images,negative_images,positive_patients,negative_patients
+<MISSING>,<MISSING>,<MISSING>,ap,39,20,38,1,19,1
+<MISSING>,<MISSING>,<MISSING>,pa,4,4,2,2,2,2
+Agfa,CR 85,8.0,ap,1549,788,0,1549,0,788
+Agfa,CR 85,8.0,pa,660,468,0,660,0,468
+GE Healthcare,Optima XR220,14.0,ap,1292,282,1250,42,272,10
+GE Healthcare,Optima XR220,14.0,pa,164,71,163,1,70,1
+GE Healthcare,Optima XR646,14.0,ap,25,24,24,1,23,1
+GE Healthcare,Optima XR646,14.0,pa,31,30,29,2,28,2
