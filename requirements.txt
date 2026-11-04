@@ -1,3 +1,15 @@
 pandas
 pydicom
 openpyxl
+numpy
+Pillow
+scikit-learn
+scipy
+joblib
+matplotlib
+torch
+torchvision
+xgboost
+streamlit
+shap
+pytest

@@ -31,6 +31,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as T
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
+from image_io import set_normalization_stats, load_normalized_image
 
 import matplotlib
 matplotlib.use("Agg")
@@ -65,7 +68,15 @@ eval_transform = T.Compose([
 def load_model():
     model = models.resnet18(weights=None)
     model.fc = nn.Linear(model.fc.in_features, 1)
-    model.load_state_dict(torch.load(CKPT, map_location=DEVICE))
+    checkpoint = torch.load(CKPT, map_location=DEVICE)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["state_dict"])
+        stats = checkpoint.get("normalization_stats")
+        if stats is not None:
+            set_normalization_stats(*stats)
+    else:
+        model.load_state_dict(checkpoint)
+        raise RuntimeError("This legacy checkpoint has no frozen normalization statistics; retrain with the current train_cnn.py before generating Grad-CAM.")
     return model.to(DEVICE).eval()
 
 
@@ -109,11 +120,11 @@ def main():
     if not CKPT.exists():
         raise FileNotFoundError(f"Checkpoint not found: {CKPT}. Run train_cnn.py first.")
 
-    matched = PROCESSED / "cov_caldas_test_age_matched.csv"
+    matched = PROCESSED / "cov_caldas_test_age_matched_FIXED.csv"
     if matched.exists():
         df, tag = pd.read_csv(matched), "test_age_matched"
     else:
-        full = pd.read_csv(PROCESSED / "cov_caldas_master_table.csv")
+        full = pd.read_csv(PROCESSED / "cov_caldas_master_frontal.csv")
         df, tag = full[full["split"] == "test"], "test_full"
         print("[FLAG] Age-matched test set not found - using the full test set.")
     print(f"Grad-CAM source: {tag} ({len(df)} images)")
@@ -127,7 +138,7 @@ def main():
     col_counter = {"positive": 0, "negative": 0}
 
     for _, r in samples.iterrows():
-        img = Image.open(r["image_path"]).convert("RGB")
+        img = load_normalized_image(r["image_path"])
         x = eval_transform(img).unsqueeze(0).to(DEVICE)
         cam, prob = grad_cam(model, x)
         base = np.array(img.resize((IMG_SIZE, IMG_SIZE)).convert("L"))
@@ -155,4 +166,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+

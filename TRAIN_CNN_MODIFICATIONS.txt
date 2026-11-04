@@ -1,3 +1,5 @@
+> **Historical notes:** This file includes prior dataset decisions, results, or expected ranges from superseded runs. Do not treat those numbers as current validated performance. The active Cov-Caldas Stage 1 command sequence is in `EXECUTION_GUIDE.md`; no full training was run during code preparation.
+
 ════════════════════════════════════════════════════════════════════════════════════
 EXACT MODIFICATIONS NEEDED FOR: src/models/cnn/train_cnn.py
 ════════════════════════════════════════════════════════════════════════════════════

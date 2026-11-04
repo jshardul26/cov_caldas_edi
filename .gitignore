@@ -1,7 +1,17 @@
 data/raw/
+data/processed/
+models/checkpoints/
+models/metadata_baselines/
+models/metadata_mlp/
+models/fusion/
+reports/baselines/*.csv
+reports/eda/*.csv
+reports/figures/*.png
 __pycache__/
 *.pyc
 *.zip
 .env
 .venv/
 venv/
+.pytest_cache/
+app/__pycache__/

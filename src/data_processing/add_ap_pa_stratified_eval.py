@@ -1,15 +1,15 @@
 """
 AP/PA View Confound Analysis.
 
-The positive class is 70% more likely to be acquired in AP (anterior-posterior)
-view than the negative class (87.1% AP vs 70.5% AP). This creates a confound:
+The AP/PA view mix differs by class in the observed table. This creates a potential confound:
 the model could be learning "AP projection → positive" rather than medical signal.
 
 This script generates stratified evaluation sets:
 1. AP-only evaluation set (subset of each split, both classes matched on AP)
 2. PA-only evaluation set (subset of each split, both classes matched on PA)
 
-Then measure CNN performance separately on each. If the CNN is learning
+Then measure CNN performance separately on each. These are view-restricted
+test subsets and are not matched for class count or age. If the CNN is learning
 image content rather than projection artifact, performance should be
 similar for AP and PA. If it drops dramatically for PA, that's evidence
 the model was exploiting the AP/PA confound.
@@ -45,8 +45,7 @@ def create_stratified_views():
     print(pd.crosstab(df["stage1_label"], df["view"], margins=True))
     
     print("\n=== Issue ===")
-    print("Positive class is heavily AP-biased (87.1% AP) vs negative (70.5% AP).")
-    print("If CNN learns the AP/PA difference, it's not learning medical signal.")
+    print("Inspect the measured view proportions below; view-specific scores are descriptive robustness checks.")
     
     # Create AP-only and PA-only subsets
     ap_df = df[df["view"] == "ap"].copy()
@@ -82,9 +81,9 @@ After training on the standard split (mixed AP/PA):
 2. Evaluate on PA-only: How does CNN perform?
 3. Compare to full set performance
 
-If CNN AUC is HIGH on both AP and PA: ← Good, learned medical content
-If CNN AUC is HIGH on AP but LOW on PA: ← Bad, learned AP/PA as shortcut
-If CNN AUC is MODERATE on both: ← Mixed signal + artifact
+Similar scores across views do not prove the model learned medical content.
+Different scores indicate view-dependent performance, not by themselves a cause.
+Report counts and uncertainty for each view-restricted subset.
 
 Even if AUC differs by view, that tells you something about what
 the model learned.

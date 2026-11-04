@@ -1,12 +1,18 @@
-﻿import pandas as pd
+import pandas as pd
+from pathlib import Path
 
-MASTER = r"D:\EDI PROJECT 5\data\processed\cov_caldas_master_frontal.csv"
-META = r"D:\EDI PROJECT 5\reports\eda\cov_caldas_dicom_metadata_analysis.csv"
+ROOT = Path(__file__).resolve().parents[2]
+MASTER = ROOT / "data" / "processed" / "cov_caldas_master_frontal.csv"
+META = ROOT / "reports" / "eda" / "cov_caldas_dicom_metadata_analysis.csv"
 
 master = pd.read_csv(MASTER)
 meta = pd.read_csv(META)
 
-meta["patient_id"] = master["patient_id"].values
+if "image_path" not in meta:
+    raise KeyError("Metadata table has no image_path; rerun analyze_dicom_metadata.py")
+meta = meta.merge(master[["image_path", "patient_id"]], on="image_path", how="left", validate="one_to_one")
+if meta.patient_id.isna().any():
+    raise RuntimeError("Metadata rows failed to join to patient IDs")
 
 ge = meta[
     (meta["manufacturer"] == "GE Healthcare") &

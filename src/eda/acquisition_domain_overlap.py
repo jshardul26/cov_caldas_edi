@@ -1,6 +1,8 @@
 import pandas as pd
+from pathlib import Path
 
-CSV = r"D:\EDI PROJECT 5\reports\eda\cov_caldas_dicom_metadata_analysis.csv"
+ROOT = Path(__file__).resolve().parents[2]
+CSV = ROOT / "reports" / "eda" / "cov_caldas_dicom_metadata_analysis.csv"
 
 df = pd.read_csv(CSV)
 
@@ -10,20 +12,18 @@ print("=" * 90)
 
 # The metadata analysis file doesn't contain patient_id,
 # so merge it back from the master dataset.
-MASTER = r"D:\EDI PROJECT 5\data\processed\cov_caldas_master_frontal.csv"
+MASTER = ROOT / "data" / "processed" / "cov_caldas_master_frontal.csv"
 
 master = pd.read_csv(MASTER)
 
 # Match rows using image_path if available in both files.
 # The metadata analysis file currently does not contain image_path,
 # so reconstruct alignment using the original row order.
-if len(master) != len(df):
-    raise RuntimeError(
-        f"Row count mismatch: master={len(master)}, metadata={len(df)}"
-    )
-
-df["patient_id"] = master["patient_id"].values
-df["image_path"] = master["image_path"].values
+if "image_path" not in df:
+    raise KeyError("Metadata table has no image_path; rerun analyze_dicom_metadata.py")
+df = df.merge(master[["image_path", "patient_id"]], on="image_path", how="left", validate="one_to_one")
+if df["patient_id"].isna().any():
+    raise RuntimeError("Some image metadata rows did not join to the master table")
 
 # Acquisition-domain combinations
 DOMAIN_SETS = [
@@ -148,7 +148,8 @@ print(
     ).to_string(index=False)
 )
 
-OUTPUT = r"D:\EDI PROJECT 5\reports\eda\acquisition_domain_overlap.csv"
+OUTPUT = ROOT / "reports" / "eda" / "acquisition_domain_overlap.csv"
+OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 summary.to_csv(OUTPUT, index=False)
 
 print("\nSaved:")

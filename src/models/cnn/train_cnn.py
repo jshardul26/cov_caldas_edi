@@ -30,6 +30,8 @@ version — see pytorch.org for the right command for your GPU).
 
 import time
 import warnings
+import json
+import random
 warnings.filterwarnings("ignore", message="A NumPy version")
 
 from pathlib import Path
@@ -43,7 +45,9 @@ from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 import torchvision.transforms as T
 import torchvision.models as models
 
-from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
+from sklearn.metrics import (roc_auc_score, accuracy_score, confusion_matrix,
+                             average_precision_score, precision_score, recall_score,
+                             f1_score, brier_score_loss)
 
 
 def find_project_root():
@@ -64,7 +68,8 @@ REPORTS.mkdir(parents=True, exist_ok=True)
 
 import sys
 sys.path.insert(0, str(ROOT / "src" / "utils"))
-from image_io import load_normalized_image
+from image_io import (load_normalized_image, load_and_set_norm_stats,
+                      get_normalization_stats, set_normalization_stats)
 
 
 CONFIG = {
@@ -77,6 +82,12 @@ CONFIG = {
 }
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
 
 
 # ---------------------------------------------------------------- dataset --
@@ -86,11 +97,17 @@ class CovCaldasImageDataset(Dataset):
         self.paths = df["image_path"].values
         self.labels = (df["stage1_label"] == "positive").astype(int).values
         self.transform = transform
+        # DataLoader workers use Windows spawn; copy the frozen train-only
+        # normalization values into each worker's pickled Dataset instance.
+        self.norm_stats = get_normalization_stats()
+        if self.norm_stats is None:
+            raise RuntimeError("Call load_and_set_norm_stats(train_df) before creating image datasets.")
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, idx):
+        set_normalization_stats(*self.norm_stats)
         img = load_normalized_image(self.paths[idx])
         img = self.transform(img)
         label = torch.tensor(self.labels[idx], dtype=torch.float32)
@@ -132,17 +149,21 @@ def load_splits():
     val_df = df[df["split"] == "val"].reset_index(drop=True)
     test_df = df[df["split"] == "test"].reset_index(drop=True)
 
-    val_matched_path = PROCESSED / "cov_caldas_val_age_matched.csv"
-    test_matched_path = PROCESSED / "cov_caldas_test_age_matched.csv"
+    val_matched_path = PROCESSED / "cov_caldas_val_age_matched_FIXED.csv"
+    test_matched_path = PROCESSED / "cov_caldas_test_age_matched_FIXED.csv"
     val_matched_df = pd.read_csv(val_matched_path) if val_matched_path.exists() else None
     test_matched_df = pd.read_csv(test_matched_path) if test_matched_path.exists() else None
+    ap_path = PROCESSED / "cov_caldas_master_frontal_AP_ONLY.csv"
+    pa_path = PROCESSED / "cov_caldas_master_frontal_PA_ONLY.csv"
+    ap_test = pd.read_csv(ap_path).query("split == 'test'") if ap_path.exists() else None
+    pa_test = pd.read_csv(pa_path).query("split == 'test'") if pa_path.exists() else None
 
     if val_matched_df is None or test_matched_df is None:
-        print("[FLAG] Age-matched eval sets not found — run build_age_matched_eval_set.py "
+        print("[FLAG] Age-matched eval sets not found — run build_age_matched_eval_set_FIXED.py "
               "first (src/evaluation/) for the full shortcut-learning comparison. "
               "Continuing with full val/test only.")
 
-    return train_df, val_df, test_df, val_matched_df, test_matched_df
+    return train_df, val_df, test_df, val_matched_df, test_matched_df, ap_test, pa_test
 
 
 # ------------------------------------------------------------------ model --
@@ -207,6 +228,17 @@ def evaluate_set(model, df, name, criterion):
         model, loader, criterion, optimizer=None
     )
 
+    # Patient is the analysis unit; average probabilities across that
+    # patient's images to match the metadata baselines and prevent image-rich
+    # patients from receiving extra weight in reported metrics.
+    pred_frame = pd.DataFrame({"patient_id": df["patient_id"].to_numpy(),
+                               "label": labels.astype(int), "probability": probs})
+    inconsistent = pred_frame.groupby("patient_id")["label"].nunique().gt(1)
+    if inconsistent.any():
+        raise ValueError(f"Inconsistent labels for {int(inconsistent.sum())} patients in {name}")
+    patient = pred_frame.groupby("patient_id", as_index=False).agg(label=("label", "first"), probability=("probability", "mean"))
+    labels, probs = patient["label"].to_numpy(), patient["probability"].to_numpy()
+    auc = roc_auc_score(labels, probs)
     preds = (probs >= 0.5).astype(int)
     acc = accuracy_score(labels, preds)
 
@@ -216,10 +248,16 @@ def evaluate_set(model, df, name, criterion):
 
     sens = tp / (tp + fn) if (tp + fn) else float("nan")
     spec = tn / (tn + fp) if (tn + fp) else float("nan")
+    precision = precision_score(labels, preds, zero_division=0)
+    recall = recall_score(labels, preds, zero_division=0)
+    f1 = f1_score(labels, preds, zero_division=0)
+    pr_auc = average_precision_score(labels, probs) if len(np.unique(labels)) == 2 else float("nan")
+    brier = brier_score_loss(labels, probs)
 
     print(
-        f"  {name}: AUC={auc:.4f}  Acc={acc:.4f}  "
-        f"Sens={sens:.4f}  Spec={spec:.4f}  (n={len(df)})"
+        f"  {name}: patient AUC={auc:.4f}  Acc={acc:.4f}  "
+        f"Sens={sens:.4f}  Spec={spec:.4f}  PR-AUC={pr_auc:.4f}  F1={f1:.4f}  "
+        f"(patients={len(patient)}, images={len(df)})"
     )
 
     return {
@@ -228,7 +266,13 @@ def evaluate_set(model, df, name, criterion):
         "accuracy": acc,
         "sensitivity": sens,
         "specificity": spec,
-        "n": len(df)
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "pr_auc": pr_auc,
+        "brier_score": brier,
+        "n": len(patient),
+        "n_images": len(df)
     }
 
 
@@ -239,7 +283,13 @@ def main():
         print("[WARNING] No CUDA GPU detected — this will be slow on CPU. "
               "Check your torch install matches your CUDA version if you have an RTX 4050.")
 
-    train_df, val_df, test_df, val_matched_df, test_matched_df = load_splits()
+    train_df, val_df, test_df, val_matched_df, test_matched_df, ap_test_df, pa_test_df = load_splits()
+
+    if train_df.empty or val_df.empty or test_df.empty:
+        raise ValueError("Train, validation, and test splits must all contain rows.")
+    if train_df["stage1_label"].nunique() != 2 or val_df["stage1_label"].nunique() != 2:
+        raise ValueError("Train and validation splits must each contain both classes.")
+    load_and_set_norm_stats(train_df)
 
     print(
         f"Train: {len(train_df)} images "
@@ -286,6 +336,7 @@ def main():
     epochs_without_improvement = 0
 
     best_ckpt_path = CHECKPOINTS / "cov_caldas_resnet18_best.pt"
+    history = []
 
     print(
         f"\n=== Training (max {CONFIG['max_epochs']} epochs, "
@@ -299,6 +350,9 @@ def main():
             f"--- Epoch {epoch}/{CONFIG['max_epochs']} ---",
             flush=True
         )
+        history.append({"epoch": epoch, "train_loss": train_loss,
+                        "train_auc": train_auc, "val_loss": val_loss,
+                        "val_auc": val_auc})
 
         train_loss, train_auc, _, _ = run_epoch(
             model,
@@ -308,13 +362,18 @@ def main():
             progress="train"
         )
 
-        val_loss, val_auc, _, _ = run_epoch(
+        val_loss, _, val_probs, val_labels = run_epoch(
             model,
             val_loader,
             criterion,
             optimizer=None,
             progress="val"
         )
+        val_frame = pd.DataFrame({"patient_id": val_df["patient_id"].to_numpy(),
+                                  "label": (val_df["stage1_label"] == "positive").astype(int).to_numpy(),
+                                  "probability": val_probs})
+        val_patient = val_frame.groupby("patient_id", as_index=False).agg(label=("label", "first"), probability=("probability", "mean"))
+        val_auc = roc_auc_score(val_patient["label"], val_patient["probability"])
 
         print(
             f"Epoch {epoch:2d}: "
@@ -330,10 +389,9 @@ def main():
             best_val_auc = val_auc
             epochs_without_improvement = 0
 
-            torch.save(
-                model.state_dict(),
-                best_ckpt_path
-            )
+            torch.save({"state_dict": model.state_dict(),
+                        "normalization_stats": get_normalization_stats(),
+                        "config": CONFIG}, best_ckpt_path)
 
             print(
                 f"  -> new best val AUC, checkpoint saved to "
@@ -355,12 +413,17 @@ def main():
         f"(val AUC={best_val_auc:.4f}) for final evaluation ==="
     )
 
-    model.load_state_dict(
-        torch.load(
-            best_ckpt_path,
-            map_location=DEVICE
-        )
-    )
+    checkpoint = torch.load(best_ckpt_path, map_location=DEVICE)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["state_dict"])
+    else:  # backward compatibility with earlier state_dict-only checkpoints
+        model.load_state_dict(checkpoint)
+    with open(CHECKPOINTS / "cov_caldas_resnet18_config.json", "w", encoding="utf-8") as f:
+        json.dump({"model": "resnet18_image_only", "config": CONFIG,
+                   "normalization_stats": get_normalization_stats(),
+                   "best_val_auc": best_val_auc, "seed": SEED}, f, indent=2)
+    with open(CHECKPOINTS / "cov_caldas_resnet18_training_history.json", "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
 
     print("\n=== Final evaluation ===")
 
@@ -401,6 +464,8 @@ def main():
             criterion
         )
     )
+    results.append(evaluate_set(model, ap_test_df, "test (AP-only)", criterion))
+    results.append(evaluate_set(model, pa_test_df, "test (PA-only)", criterion))
 
     results_df = pd.DataFrame(
         [r for r in results if r is not None]
@@ -410,6 +475,24 @@ def main():
         REPORTS / "cov_caldas_cnn_results.csv",
         index=False
     )
+
+    # Save split-level predictions alongside aggregate metrics for auditability.
+    for frame, tag in [(val_df, "val"), (test_df, "test"),
+                       (val_matched_df, "val_age_matched"),
+                       (test_matched_df, "test_age_matched"),
+                       (ap_test_df, "test_AP_only"), (pa_test_df, "test_PA_only")]:
+        if frame is None or frame.empty:
+            continue
+        loader = DataLoader(CovCaldasImageDataset(frame, eval_transform),
+                            batch_size=CONFIG["batch_size"], shuffle=False,
+                            num_workers=CONFIG["num_workers"])
+        _, _, probs, labels = run_epoch(model, loader, criterion)
+        patient_predictions = pd.DataFrame({"patient_id": frame["patient_id"].to_numpy(),
+                                            "label": labels.astype(int),
+                                            "probability_positive": probs}).groupby("patient_id", as_index=False).agg(
+                                                label=("label", "first"), probability_positive=("probability_positive", "mean"))
+        patient_predictions.to_csv(
+                          REPORTS / f"cov_caldas_cnn_{tag}_predictions.csv", index=False)
 
     print(
         f"\nSaved results to "
@@ -482,9 +565,9 @@ def main():
                     f"[GOOD] CNN's age-matched AUC "
                     f"({matched_test_row['auc']:.4f}) clears the "
                     f"metadata ceiling "
-                    f"({best_meta_auc:.4f}) meaningfully — evidence "
-                    f"it's using signal beyond age/sex. Still report "
-                    f"Grad-CAM as corroborating evidence."
+                    f"({best_meta_auc:.4f}) on this evaluation subset. "
+                    f"This comparison alone does not establish medical "
+                    f"signal; inspect uncertainty and shortcut diagnostics."
                 )
 
     else:

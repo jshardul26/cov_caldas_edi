@@ -28,12 +28,17 @@ Run from src/models/baselines/.
 """
 
 from pathlib import Path
+import argparse
+import json
+import joblib
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, classification_report
+from sklearn.metrics import (roc_auc_score, accuracy_score, confusion_matrix,
+                             average_precision_score, precision_score, recall_score,
+                             f1_score, brier_score_loss)
 
 try:
     from xgboost import XGBClassifier
@@ -45,6 +50,7 @@ ROOT = Path(__file__).parent.parent.parent.parent
 PROCESSED = ROOT / "data" / "processed"
 REPORTS = ROOT / "reports" / "baselines"
 REPORTS.mkdir(parents=True, exist_ok=True)
+ARTIFACTS = ROOT / "models" / "metadata_baselines"
 
 FEATURES = ["age", "sex_M"]  # age_is_estimated deliberately excluded — see module docstring
 
@@ -79,7 +85,11 @@ def load_patient_level():
 
 def prepare_features(df):
     df = df.copy()
-    df["sex_M"] = (df["sex"] == "M").astype(int)
+    sex = df["sex"].astype(str).str.strip().str.upper()
+    df["sex_M"] = sex.map({"M": 1.0, "MALE": 1.0, "F": 0.0, "FEMALE": 0.0}).fillna(0.5)
+    df["age"] = pd.to_numeric(df["age"], errors="coerce")
+    if df[FEATURES].isna().any().any():
+        raise ValueError("Metadata features contain missing ages; resolve them in the verification/preprocessing step.")
     df["label"] = (df["stage1_label"] == "positive").astype(int)
     return df
 
@@ -87,38 +97,69 @@ def prepare_features(df):
 def evaluate(model, X, y, split_name):
     proba = model.predict_proba(X)[:, 1]
     preds = model.predict(X)
-    auc = roc_auc_score(y, proba)
+    auc = roc_auc_score(y, proba) if len(np.unique(y)) == 2 else float("nan")
     acc = accuracy_score(y, preds)
-    tn, fp, fn, tp = confusion_matrix(y, preds).ravel()
+    tn, fp, fn, tp = confusion_matrix(y, preds, labels=[0, 1]).ravel()
     sensitivity = tp / (tp + fn) if (tp + fn) else float("nan")
     specificity = tn / (tn + fp) if (tn + fp) else float("nan")
-    print(f"  {split_name}: AUC={auc:.4f}  Acc={acc:.4f}  Sens={sensitivity:.4f}  Spec={specificity:.4f}  (n={len(y)})")
-    return {"split": split_name, "auc": auc, "accuracy": acc, "sensitivity": sensitivity, "specificity": specificity, "n": len(y)}
+    precision = precision_score(y, preds, zero_division=0)
+    recall = recall_score(y, preds, zero_division=0)
+    f1 = f1_score(y, preds, zero_division=0)
+    pr_auc = average_precision_score(y, proba) if len(np.unique(y)) == 2 else float("nan")
+    brier = brier_score_loss(y, proba)
+    print(f"  {split_name}: ROC-AUC={auc:.4f} PR-AUC={pr_auc:.4f} Acc={acc:.4f} F1={f1:.4f} Sens={sensitivity:.4f} Spec={specificity:.4f} (n={len(y)})")
+    return {"split": split_name, "auc": auc, "pr_auc": pr_auc, "accuracy": acc,
+            "precision": precision, "recall": recall, "f1": f1,
+            "sensitivity": sensitivity, "specificity": specificity,
+            "brier_score": brier, "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp), "n": len(y)}
 
 
-def run_model(name, model, train, val, test):
+def run_model(name, model, train, val, test, save=True):
     print(f"\n--- {name} ---")
     X_train, y_train = train[FEATURES], train["label"]
+    if y_train.nunique() != 2:
+        raise ValueError(f"Training split has one class only; cannot fit {name}.")
     model.fit(X_train, y_train)
 
+    # Save each estimator separately so it can be loaded without retraining.
+    if save:
+        model_dir = ARTIFACTS / name.lower()
+        model_dir.mkdir(parents=True, exist_ok=True)
+        joblib.dump(model, model_dir / "model.joblib")
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump({"model": name, "features": FEATURES,
+                       "target": "stage1_label == positive",
+                       "unit": "patient", "seed": 42,
+                       "sex_M_mapping": {"male": 1, "female": 0, "unknown": 0.5},
+                       "hyperparameters": model.get_params(deep=False)}, f, indent=2, default=str)
+
     results = []
-    results.append(evaluate(model, X_train, y_train, "train"))
-    results.append(evaluate(model, val[FEATURES], val["label"], "val"))
-    results.append(evaluate(model, test[FEATURES], test["label"], "test"))
+    for split_name, frame in (("train", train), ("val", val), ("test", test)):
+        proba = model.predict_proba(frame[FEATURES])[:, 1]
+        results.append(evaluate(model, frame[FEATURES], frame["label"], split_name))
+        pd.DataFrame({"patient_id": frame["patient_id"].to_numpy(),
+                      "label": frame["label"].to_numpy(),
+                      "probability_positive": proba}).to_csv(
+                          model_dir / f"{split_name}_predictions.csv", index=False)
 
     if hasattr(model, "coef_"):
         print(f"  Coefficients: age={model.coef_[0][0]:.4f}  sex_M={model.coef_[0][1]:.4f}")
-        print(f"  (positive age coefficient = higher age pushes prediction toward positive class,")
-        print(f"   consistent with the confirmed 31.5-year age gap if positive)")
+        print("  Coefficients are descriptive associations in this training split, not causal effects.")
     elif hasattr(model, "feature_importances_"):
         print(f"  Feature importances: age={model.feature_importances_[0]:.4f}  sex_M={model.feature_importances_[1]:.4f}")
 
     for r in results:
         r["model"] = name
+    if save:
+        pd.DataFrame(results).to_csv(model_dir / "metrics.csv", index=False)
     return results
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Train Cov-Caldas Stage 1 metadata baselines.")
+    parser.add_argument("--model", choices=["all", "logistic", "random_forest", "xgboost"],
+                        default="all", help="Train one baseline independently, or all available models.")
+    args = parser.parse_args()
     patient_df = load_patient_level()
     patient_df = prepare_features(patient_df)
 
@@ -130,23 +171,30 @@ def main():
 
     all_results = []
 
-    logreg = LogisticRegression(class_weight="balanced", max_iter=1000)
-    all_results += run_model("LogisticRegression", logreg, train, val, test)
+    if args.model in ("all", "logistic"):
+        logreg = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
+        all_results += run_model("LogisticRegression", logreg, train, val, test)
 
-    rf = RandomForestClassifier(n_estimators=200, class_weight="balanced", random_state=42, max_depth=5)
-    all_results += run_model("RandomForest", rf, train, val, test)
+    if args.model in ("all", "random_forest"):
+        rf = RandomForestClassifier(n_estimators=200, class_weight="balanced", random_state=42, max_depth=5)
+        all_results += run_model("RandomForest", rf, train, val, test)
 
-    if HAS_XGB:
+    if args.model in ("all", "xgboost") and HAS_XGB:
         pos_weight = (train["label"] == 0).sum() / (train["label"] == 1).sum()
         xgb = XGBClassifier(n_estimators=200, max_depth=3, scale_pos_weight=pos_weight,
                              eval_metric="logloss", random_state=42)
         all_results += run_model("XGBoost", xgb, train, val, test)
-    else:
+    elif args.model == "xgboost" and not HAS_XGB:
+        raise RuntimeError("XGBoost requested but not installed. Install it with: python -m pip install xgboost")
+    elif args.model == "all" and not HAS_XGB:
         print("\n[SKIPPED] xgboost not installed — run `pip install xgboost` to include it. "
               "LogReg + RF results below are unaffected.")
 
     results_df = pd.DataFrame(all_results)
-    results_df.to_csv(REPORTS / "cov_caldas_metadata_baseline_results.csv", index=False)
+    if results_df.empty:
+        raise RuntimeError("No model was trained.")
+    if args.model == "all":
+        results_df.to_csv(REPORTS / "cov_caldas_metadata_baseline_results.csv", index=False)
 
     print(f"\n=== Summary (test set AUC — this is the shortcut-learning ceiling for Phase 5) ===")
     test_summary = results_df[results_df["split"] == "test"][["model", "auc", "accuracy", "sensitivity", "specificity"]]
@@ -155,7 +203,10 @@ def main():
     print(f"it's leaning on age/sex-correlated image features (shortcut learning) rather than")
     print(f"genuine COVID-specific signal — same interpretation that caught the original pivot's problem.")
 
-    print(f"\nSaved results to {REPORTS / 'cov_caldas_metadata_baseline_results.csv'}")
+    if args.model == "all":
+        print(f"\nSaved combined results to {REPORTS / 'cov_caldas_metadata_baseline_results.csv'}")
+    else:
+        print(f"\nSaved standalone model, config, and metrics under {ARTIFACTS}")
 
 
 if __name__ == "__main__":

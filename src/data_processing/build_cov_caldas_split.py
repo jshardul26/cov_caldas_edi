@@ -49,7 +49,7 @@ def frozen_patient_split(df, train_frac=0.7, val_frac=0.15, seed=42):
     assert not (train_patients & test_patients), "LEAKAGE: train/test overlap!"
     assert not (val_patients & test_patients), "LEAKAGE: val/test overlap!"
     print("Patient-level split confirmed: zero overlap between train/val/test.")
-    print("Split was stratified by class — each split should preserve the ~22:78 ratio.")
+    print("Split was stratified by patient-level class label.")
 
     return df
 

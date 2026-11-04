@@ -99,29 +99,28 @@ def match_split_improved(df, split_name):
         pos_ages = pos["age"].values.reshape(-1, 1)
         neg_ages = neg["age"].values.reshape(-1, 1)
         
-        distances = cdist(pos_ages, neg_ages, metric="euclidean").ravel()
-        pos_idx, neg_idx = np.unravel_index(np.argsort(distances), distances.shape)
+        distances = cdist(pos_ages, neg_ages, metric="euclidean")
+        flat_order = np.argsort(distances, axis=None)
+        pos_idx, neg_idx = np.unravel_index(flat_order, distances.shape)
         
         # Greedy matching: take closest pairs until one class runs out
         n_pairs = min(len(pos), len(neg))
         matched_age_gaps = []
         
-        for i in range(n_pairs):
-            p_idx = pos_idx[i]
-            n_idx = neg_idx[i]
-            
-            # Ensure indices haven't been used (greedy, no re-matching)
-            if p_idx < len(pos) and n_idx < len(neg):
-                pos_patient = pos.iloc[p_idx]["patient_id"]
-                neg_patient = neg.iloc[n_idx]["patient_id"]
-                pos_age = pos.iloc[p_idx]["age"]
-                neg_age = neg.iloc[n_idx]["age"]
-                
-                keep_ids.append(pos_patient)
-                keep_ids.append(neg_patient)
-                
-                age_gap = abs(pos_age - neg_age)
-                matched_age_gaps.append(age_gap)
+        used_pos, used_neg = set(), set()
+        for p_idx, n_idx in zip(pos_idx, neg_idx):
+            if p_idx in used_pos or n_idx in used_neg:
+                continue
+            pos_patient = pos.iloc[p_idx]["patient_id"]
+            neg_patient = neg.iloc[n_idx]["patient_id"]
+            pos_age = pos.iloc[p_idx]["age"]
+            neg_age = neg.iloc[n_idx]["age"]
+            keep_ids.extend([pos_patient, neg_patient])
+            used_pos.add(p_idx)
+            used_neg.add(n_idx)
+            matched_age_gaps.append(abs(pos_age - neg_age))
+            if len(used_pos) == n_pairs:
+                break
         
         if matched_age_gaps:
             mean_gap = np.mean(matched_age_gaps)
@@ -133,7 +132,7 @@ def match_split_improved(df, split_name):
             "age_bin": str(age_bin),
             "pos_patients": len(pos),
             "neg_patients": len(neg),
-            "matched_pairs": n_pairs,
+                "matched_pairs": len(matched_age_gaps),
             "mean_age_gap_in_pairs": mean_gap
         })
     
@@ -176,7 +175,7 @@ def match_split_improved(df, split_name):
         
         if min(n_pat.values()) < 15:
             print(f"  [WARNING] Fewer than 15 patients in smaller class — "
-                  f"AUC on this subset will be very noisy. Report with ≥2 confidence intervals.")
+                  f"AUC on this subset will be very noisy; report uncertainty intervals.")
     else:
         print(f"[FLAG] No matched patients in {split_name}.")
     

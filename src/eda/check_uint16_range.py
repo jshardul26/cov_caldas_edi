@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from PIL import Image
 
-CSV = r"D:\EDI PROJECT 5\data\processed\cov_caldas_master_frontal.csv"
+ROOT = Path(__file__).resolve().parents[2]
+CSV = ROOT / "data" / "processed" / "cov_caldas_master_frontal.csv"
 
 df = pd.read_csv(CSV)
 
@@ -26,6 +28,10 @@ for i, r in enumerate(df.itertuples(index=False), 1):
         })
 
 out = pd.DataFrame(rows)
+
+if out.empty:
+    print("No uint16 images found in the frontal table; no range summary to compute.")
+    raise SystemExit(0)
 
 print("=" * 70)
 print("UINT16 IMAGE RANGE CHECK")

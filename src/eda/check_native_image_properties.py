@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from PIL import Image
 
-CSV = r"D:\EDI PROJECT 5\data\processed\cov_caldas_master_frontal.csv"
+ROOT = Path(__file__).resolve().parents[2]
+CSV = ROOT / "data" / "processed" / "cov_caldas_master_frontal.csv"
 
 df = pd.read_csv(CSV)
 
@@ -60,9 +62,9 @@ print(
 )
 
 out.to_csv(
-    r"D:\EDI PROJECT 5\reports\eda\cov_caldas_native_image_properties.csv",
+    ROOT / "reports" / "eda" / "cov_caldas_native_image_properties.csv",
     index=False
 )
 
 print("\nSaved:")
-print(r"D:\EDI PROJECT 5\reports\eda\cov_caldas_native_image_properties.csv")
+print(ROOT / "reports" / "eda" / "cov_caldas_native_image_properties.csv")

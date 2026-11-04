@@ -1,11 +1,10 @@
 import json
-import glob
 import os
+from pathlib import Path
 import pandas as pd
-from collections import Counter, defaultdict
 
-ROOT = r"D:\EDI PROJECT 5\data\raw\cov_caldas"
-CSV = r"D:\EDI PROJECT 5\data\processed\cov_caldas_master_frontal.csv"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CSV = PROJECT_ROOT / "data" / "processed" / "cov_caldas_master_frontal.csv"
 
 df = pd.read_csv(CSV)
 
@@ -56,6 +55,7 @@ for i, r in enumerate(df.itertuples(index=False), 1):
 
     if not os.path.exists(json_path):
         rows.append({
+            "image_path": image_path,
             "stage1_label": r.stage1_label,
             "split": r.split,
             "view": r.view,
@@ -67,6 +67,7 @@ for i, r in enumerate(df.itertuples(index=False), 1):
         d = json.load(f)
 
     row = {
+        "image_path": image_path,
         "stage1_label": r.stage1_label,
         "split": r.split,
         "view": r.view,
@@ -147,7 +148,8 @@ print(
     .to_string()
 )
 
-OUTPUT = r"D:\EDI PROJECT 5\reports\eda\cov_caldas_dicom_metadata_analysis.csv"
+OUTPUT = PROJECT_ROOT / "reports" / "eda" / "cov_caldas_dicom_metadata_analysis.csv"
+OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 
 out.to_csv(OUTPUT, index=False)
 

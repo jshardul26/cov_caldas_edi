@@ -9,10 +9,7 @@ differently. This version:
 2. Applies identical normalization to all images
 3. Then checks if images still separate by intensity/technical features
 
-If features still predict class after proper normalization, either:
-  A) Classes differ in genuine image content (medical signal) ← good
-  B) There's a residual acquisition artifact (exposure, processing) ← bad
-  C) Data quality differences (compression, resolution) ← bad
+If features still predict class after normalization, the diagnostic cannot identify the cause; pixel summaries can reflect anatomy, acquisition, or data quality.
 
 Run from src/eda/ AFTER setting up normalization stats.
 """
@@ -141,13 +138,12 @@ If B is HIGH (AUC > 0.80):
   → Next step: Inspect Grad-CAM to determine which
 
 If B is LOW (AUC < 0.70):
-  → Pixel statistics alone don't predict class after proper normalization
-  → Artifact was successfully eliminated
-  → High CNN AUC would then suggest genuine medical learning
+  → Pixel statistics alone predict class less well in this test subset
+  → This does not prove all acquisition artifacts were eliminated
   
 If B is MODERATE (0.70-0.80):
-  → Ambiguous; mixed artifact + medical signal
-  → Grad-CAM + domain expertise required to interpret
+  → Ambiguous; do not assign an artifact or medical-signal cause from this result alone
+  → Use further acquisition and clinical review
   → Consider stratified evaluation (by view, by protocol) to disentangle
 """)
 

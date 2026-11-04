@@ -1,8 +1,14 @@
 import pandas as pd
+from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
 
-CSV = r"D:\EDI PROJECT 5\reports\eda\cov_caldas_dicom_metadata_analysis.csv"
+ROOT = Path(__file__).resolve().parents[2]
+CSV = ROOT / "reports" / "eda" / "cov_caldas_dicom_metadata_analysis.csv"
 
 df = pd.read_csv(CSV)
 
@@ -32,12 +38,6 @@ FEATURES = [
 X = df[FEATURES].copy()
 y = (df["stage1_label"] == "positive").astype(int)
 
-# Convert categorical metadata to one-hot
-X = pd.get_dummies(X, dummy_na=True)
-
-# Numeric missing values
-X = X.fillna(-999)
-
 train_mask = df["split"] == "train"
 val_mask = df["split"] == "val"
 test_mask = df["split"] == "test"
@@ -53,16 +53,22 @@ y_test = y.loc[test_mask]
 print(f"\nTrain: {len(X_train)}")
 print(f"Val:   {len(X_val)}")
 print(f"Test:  {len(X_test)}")
-print(f"Features after encoding: {X.shape[1]}")
+print(f"Raw metadata features: {X.shape[1]}")
 
-rf = RandomForestClassifier(
+categorical = [c for c in FEATURES if X[c].dtype == "object"]
+numeric = [c for c in FEATURES if c not in categorical]
+preprocess = ColumnTransformer([
+    ("categorical", make_pipeline(SimpleImputer(strategy="most_frequent"), OneHotEncoder(handle_unknown="ignore")), categorical),
+    ("numeric", SimpleImputer(strategy="median"), numeric),
+])
+rf = make_pipeline(preprocess, RandomForestClassifier(
     n_estimators=300,
     max_depth=8,
     min_samples_leaf=5,
     random_state=42,
     n_jobs=-1,
     class_weight="balanced"
-)
+))
 
 rf.fit(X_train, y_train)
 
@@ -84,10 +90,5 @@ print("AUC near 0.50 -> metadata does not separate classes well.")
 print("AUC substantially above 0.50 -> acquisition metadata contains class information.")
 print("Very high AUC -> strong acquisition/domain confounding.")
 
-print("\nTop metadata features:")
-importance = pd.Series(
-    rf.feature_importances_,
-    index=X.columns
-).sort_values(ascending=False)
-
-print(importance.head(20).to_string())
+print("\nPreprocessing note:")
+print("The fitted pipeline learns categorical encodings from training data only.")
